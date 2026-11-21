@@ -34,7 +34,7 @@
     button.sim { background: #3b6ef6; color: #fff; }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
     label { display: block; font-size: 12px; color: var(--muted); margin-top: 8px; }
-    input, select {
+    input {
       width: 100%; padding: 8px 10px; margin-top: 4px; border-radius: 7px;
       border: 1px solid #354070; background: #101426; color: var(--ink); font-size: 13px;
     }
@@ -61,7 +61,8 @@
   <div class="wrap">
     <h2>ACUMIL AUTO MAPS</h2>
     <div class="sub">
-      1. Sambung BLE ke <b>Acumil-Maps</b> &bull; 2. Pilih style/offline &amp; klik <b>Mulai Maps</b>.
+      1. Sambung BLE ke <b>Acumil-Maps</b> &bull; 2. Klik <b>Mulai Maps</b> untuk ikut GPS &amp; rute.<br/>
+      <i>Catatan: Peta memakai tile OSM/Carto (tampilan berbeda dari Google Maps).</i>
     </div>
 
     <div class="row">
@@ -77,23 +78,6 @@
 
     <div class="grid2">
       <div>
-        <label>Style / Mode Peta</label>
-        <select id="mapStyle">
-          <option value="dark">Carto Dark (Kontras)</option>
-          <option value="voyager">Carto Voyager</option>
-          <option value="positron">Carto Positron (Clean)</option>
-          <option value="osm">OSM Standard</option>
-          <option value="offline">Offline / Grid Lokal</option>
-        </select>
-      </div>
-      <div>
-        <label>Zoom Peta (14-17)</label>
-        <input id="zoom" type="number" min="14" max="17" value="16" />
-      </div>
-    </div>
-
-    <div class="grid2">
-      <div>
         <label>Lat Tujuan</label>
         <input id="destLat" type="number" step="0.00001" value="-6.2442" />
       </div>
@@ -103,9 +87,15 @@
       </div>
     </div>
 
-    <div>
-      <label>Jeda Kirim (detik)</label>
-      <input id="intervalSec" type="number" min="2" max="15" value="3" />
+    <div class="grid2">
+      <div>
+        <label>Zoom Peta (14-17)</label>
+        <input id="zoom" type="number" min="14" max="17" value="16" />
+      </div>
+      <div>
+        <label>Jeda Kirim (detik)</label>
+        <input id="intervalSec" type="number" min="2" max="15" value="3" />
+      </div>
     </div>
 
     <div class="preview-box">
@@ -128,7 +118,6 @@
     const H = 95;
     const FRAME_BYTES = W * H * 2;
     const CHUNK_SIZE = 120;
-    const CACHE_NAME = 'acumil-map-tiles-v1';
 
     const cv = document.getElementById('cv');
     const ctx = cv.getContext('2d', { willReadFrequently: true });
@@ -138,7 +127,6 @@
     const btnStopNav = document.getElementById('btnStopNav');
     const btnUseHere = document.getElementById('btnUseHere');
     const btnSimStep = document.getElementById('btnSimStep');
-    const mapStyleEl = document.getElementById('mapStyle');
     const liveNavEl = document.getElementById('liveNav');
     const statusEl = document.getElementById('status');
 
@@ -153,21 +141,22 @@
     let curLat = -6.2440;
     let curLon = 106.8000;
     let curAcc = null;
+    let gpsFixCount = 0;
     let prevLat = null;
     let prevLon = null;
     let headingDeg = 90;
 
-    let routeCoords = [];
+    let routeCoords = []; // [lon, lat]
     let routeSteps = [];
     let lastRouteFetchAt = 0;
-    let routeSourceLabel = 'Lokal';
+    let routeSourceLabel = 'Langsung';
 
     let navDir = 0;
     let navDistText = '0 m';
     let navStreetText = 'Siap jalan';
     let navFooterText = 'Menunggu GPS';
 
-    const memTileCache = new Map();
+    const tileCache = new Map();
 
     function setStatus(msg, state = 'warn') {
       statusEl.textContent = 'Status: ' + msg;
@@ -207,35 +196,30 @@
       return Math.max(0, Math.round(meters / 5) * 5) + ' m';
     }
 
-    function buildLocalRoute(destLat, destLon) {
+    function buildFallbackRoute(destLat, destLon) {
       routeCoords = [];
       routeSteps = [];
-      const steps = 16;
+      const steps = 12;
       for (let i = 0; i <= steps; i++) {
         const t = i / steps;
         const lat = curLat + (destLat - curLat) * t;
         const lon = curLon + (destLon - curLon) * t;
         routeCoords.push([lon, lat]);
       }
-      routeSourceLabel = 'Offline';
+      routeSourceLabel = 'Garis Lurus';
       const totalM = haversineMeters(curLat, curLon, destLat, destLon);
       const estMin = Math.max(1, Math.round(totalM / 400));
       navFooterText = `${estMin} mnt - ${formatDist(totalM)}`;
     }
 
     async function updateRouteIfNeeded(destLat, destLon, force = false) {
-      if (mapStyleEl.value === 'offline' || !navigator.onLine) {
-        buildLocalRoute(destLat, destLon);
-        return;
-      }
-
       const now = Date.now();
       if (!force && now - lastRouteFetchAt < 7000 && routeCoords.length > 1) return;
       lastRouteFetchAt = now;
 
       try {
         const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 3000);
+        const timer = setTimeout(() => ctrl.abort(), 3500);
         const url = `https://router.project-osrm.org/route/v1/driving/${curLon},${curLat};${destLon},${destLat}?overview=full&geometries=geojson&steps=true`;
         const res = await fetch(url, { signal: ctrl.signal });
         clearTimeout(timer);
@@ -256,7 +240,7 @@
         }
       } catch (_) {}
 
-      buildLocalRoute(destLat, destLon);
+      buildFallbackRoute(destLat, destLon);
     }
 
     function computeTurnGuidance(destLat, destLon) {
@@ -295,7 +279,7 @@
         const brg = bearingDeg(curLat, curLon, destLat, destLon);
         navDir = turnFromDelta(headingDeg, brg);
         navDistText = formatDist(dMeters);
-        navStreetText = mapStyleEl.value === 'offline' ? 'Mode Offline' : 'Arah Tujuan';
+        navStreetText = 'Arah Tujuan';
       }
 
       const accStr = (curAcc !== null) ? `±${Math.round(curAcc)}m` : 'simulasi';
@@ -313,125 +297,78 @@
       return ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * Math.pow(2, z);
     }
 
-    function getTileUrl(style, z, x, y) {
-      if (style === 'dark') {
-        return `https://a.basemaps.cartocdn.com/dark_nolabels/${z}/${x}/${y}.png`;
-      }
-      if (style === 'positron') {
-        return `https://a.basemaps.cartocdn.com/light_nolabels/${z}/${x}/${y}.png`;
-      }
-      if (style === 'voyager') {
-        return `https://a.basemaps.cartocdn.com/rastertiles/voyager_nolabels/${z}/${x}/${y}.png`;
-      }
-      return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
-    }
-
-    async function loadTileImage(style, z, x, y) {
+    function loadTileImage(z, x, y) {
       const n = Math.pow(2, z);
       const wx = ((x % n) + n) % n;
-      if (y < 0 || y >= n) return null;
-      const key = `${style}/${z}/${wx}/${y}`;
-      if (memTileCache.has(key)) return memTileCache.get(key);
+      if (y < 0 || y >= n) return Promise.resolve(null);
+      const key = `${z}/${wx}/${y}`;
+      if (tileCache.has(key)) return tileCache.get(key);
 
-      const url = getTileUrl(style, z, wx, y);
-      const promise = (async () => {
-        try {
-          let blob = null;
-          if ('caches' in window) {
-            const cache = await caches.open(CACHE_NAME);
-            const cachedRes = await cache.match(url);
-            if (cachedRes) {
-              blob = await cachedRes.blob();
-            } else if (navigator.onLine) {
-              const netRes = await fetch(url, { mode: 'cors' });
-              if (netRes.ok) {
-                await cache.put(url, netRes.clone());
-                blob = await netRes.blob();
-              }
-            }
-          } else if (navigator.onLine) {
-            const netRes = await fetch(url, { mode: 'cors' });
-            if (netRes.ok) blob = await netRes.blob();
+      const urls = [
+        `https://a.basemaps.cartocdn.com/rastertiles/voyager/${z}/${wx}/${y}.png`,
+        `https://tile.openstreetmap.org/${z}/${wx}/${y}.png`
+      ];
+
+      const p = new Promise((resolve) => {
+        let idx = 0;
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        const tryNext = () => {
+          if (idx >= urls.length) {
+            resolve(null);
+            return;
           }
+          img.src = urls[idx++];
+        };
+        img.onload = () => resolve(img);
+        img.onerror = () => tryNext();
+        tryNext();
+      });
 
-          if (!blob) return null;
-          return await createImageBitmap(blob);
-        } catch (_) {
-          return null;
-        }
-      })();
-
-      memTileCache.set(key, promise);
-      return promise;
-    }
-
-    function drawOfflineBackground(style, tx, ty, z) {
-      const isDark = style === 'dark' || style === 'offline';
-      ctx.fillStyle = isDark ? '#111629' : '#e8e4d8';
-      ctx.fillRect(0, 0, W, H);
-
-      // Grid blok jalan lokal
-      const stepPx = 16;
-      const shiftX = Math.round(((tx * 256) % stepPx + stepPx) % stepPx);
-      const shiftY = Math.round(((ty * 256) % stepPx + stepPx) % stepPx);
-
-      ctx.strokeStyle = isDark ? '#1e2747' : '#d2cbb8';
-      ctx.lineWidth = 1;
-      for (let x = -shiftX; x < W; x += stepPx) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-      }
-      for (let y = -shiftY; y < H; y += stepPx) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-      }
-
-      // Garis sumbu utama / radar ring
-      const cx = Math.floor(W / 2);
-      const cy = Math.floor(H / 2);
-      ctx.strokeStyle = isDark ? '#273561' : '#c2b9a3';
-      ctx.beginPath();
-      ctx.arc(cx, cy, 24, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(cx, cy, 44, 0, Math.PI * 2);
-      ctx.stroke();
+      tileCache.set(key, p);
+      return p;
     }
 
     async function renderMapAndRoute(z, destLat, destLon) {
-      const style = mapStyleEl.value;
-      const tx = lon2tileX(curLon, z);
-      const ty = lat2tileY(curLat, z);
-
-      drawOfflineBackground(style, tx, ty, z);
-
-      if (style !== 'offline') {
-        const centerTileX = Math.floor(tx);
-        const centerTileY = Math.floor(ty);
-        const offsetX = Math.round((W / 2) - (tx - centerTileX) * 256);
-        const offsetY = Math.round((H / 2) - (ty - centerTileY) * 256);
-
-        const minDX = Math.floor((-offsetX) / 256);
-        const maxDX = Math.ceil((W - offsetX) / 256);
-        const minDY = Math.floor((-offsetY) / 256);
-        const maxDY = Math.ceil((H - offsetY) / 256);
-
-        const jobs = [];
-        for (let dy = minDY; dy <= maxDY; dy++) {
-          for (let dx = minDX; dx <= maxDX; dx++) {
-            const drawX = offsetX + dx * 256;
-            const drawY = offsetY + dy * 256;
-            jobs.push(
-              loadTileImage(style, z, centerTileX + dx, centerTileY + dy).then((img) => {
-                if (img) ctx.drawImage(img, drawX, drawY, 256, 256);
-              })
-            );
-          }
-        }
-        await Promise.all(jobs);
+      ctx.fillStyle = '#e7e2d3';
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = '#d3ccb8';
+      ctx.lineWidth = 1;
+      for (let gx = 0; gx < W; gx += 16) {
+        ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+      }
+      for (let gy = 0; gy < H; gy += 16) {
+        ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
       }
 
-      // Garis rute tegas
+      const tx = lon2tileX(curLon, z);
+      const ty = lat2tileY(curLat, z);
+      const centerTileX = Math.floor(tx);
+      const centerTileY = Math.floor(ty);
+      const offsetX = Math.round((W / 2) - (tx - centerTileX) * 256);
+      const offsetY = Math.round((H / 2) - (ty - centerTileY) * 256);
+
+      const minDX = Math.floor((-offsetX) / 256);
+      const maxDX = Math.ceil((W - offsetX) / 256);
+      const minDY = Math.floor((-offsetY) / 256);
+      const maxDY = Math.ceil((H - offsetY) / 256);
+
+      const jobs = [];
+      for (let dy = minDY; dy <= maxDY; dy++) {
+        for (let dx = minDX; dx <= maxDX; dx++) {
+          const drawX = offsetX + dx * 256;
+          const drawY = offsetY + dy * 256;
+          jobs.push(
+            loadTileImage(z, centerTileX + dx, centerTileY + dy).then((img) => {
+              if (img) ctx.drawImage(img, drawX, drawY, 256, 256);
+            })
+          );
+        }
+      }
+      await Promise.all(jobs);
+
       if (routeCoords.length > 1) {
-        ctx.strokeStyle = (style === 'dark' || style === 'offline') ? '#38bdf8' : '#1d4ed8';
+        ctx.strokeStyle = '#1d4ed8';
         ctx.lineWidth = 3;
         ctx.beginPath();
         let started = false;
@@ -444,36 +381,23 @@
         ctx.stroke();
       }
 
-      // Marker tujuan (hijau)
       const dpx = (W / 2) + (lon2tileX(destLon, z) - tx) * 256;
       const dpy = (H / 2) + (lat2tileY(destLat, z) - ty) * 256;
-      ctx.fillStyle = '#22c55e';
+      ctx.fillStyle = '#16a34a';
       ctx.beginPath();
       ctx.arc(dpx, dpy, 4, 0, Math.PI * 2);
       ctx.fill();
 
-      // Posisi pengguna + arah heading di tengah
       const cx = Math.floor(W / 2);
       const cy = Math.floor(H / 2);
-      const rad = toRad(headingDeg);
-      const tipX = cx + Math.sin(rad) * 7;
-      const tipY = cy - Math.cos(rad) * 7;
-
-      ctx.strokeStyle = '#ff5ca0';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(tipX, tipY);
-      ctx.stroke();
-
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 6, 0, Math.PI * 2);
       ctx.fill();
 
       ctx.fillStyle = '#ef4444';
       ctx.beginPath();
-      ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -516,7 +440,7 @@
         await renderMapAndRoute(z, validDestLat, validDestLon);
 
         if (!txtChar || !imgChar || !bleDevice || !bleDevice.gatt || !bleDevice.gatt.connected) {
-          setStatus(`Preview [${mapStyleEl.value}] diperbarui (BLE belum terhubung).`, 'warn');
+          setStatus('Preview diperbarui (BLE belum terhubung).', 'warn');
           return;
         }
 
@@ -532,7 +456,7 @@
           await new Promise((r) => setTimeout(r, 18));
         }
 
-        setStatus(`Terkirim [${mapStyleEl.value}]: ${navDistText} ke ${navStreetText}`, 'ok');
+        setStatus(`Terkirim ke Acumil-Maps: ${navDistText} ke ${navStreetText}`, 'ok');
       } catch (err) {
         setStatus('Pengiriman ditolak/gagal: ' + (err.message || err), 'err');
       } finally {
@@ -551,6 +475,7 @@
           curLat = pos.coords.latitude;
           curLon = pos.coords.longitude;
           curAcc = pos.coords.accuracy;
+          gpsFixCount++;
           if (updateDestIfFar) {
             document.getElementById('destLat').value = (curLat - 0.0045).toFixed(5);
             document.getElementById('destLon').value = (curLon + 0.0055).toFixed(5);
@@ -581,6 +506,7 @@
             curLat = pos.coords.latitude;
             curLon = pos.coords.longitude;
             curAcc = pos.coords.accuracy;
+            gpsFixCount++;
           },
           (err) => {
             setStatus('Watch GPS: ' + err.message, 'err');
@@ -612,10 +538,6 @@
       }
       setStatus('Navigasi otomatis dihentikan.', 'warn');
     }
-
-    mapStyleEl.addEventListener('change', () => {
-      pushNavToBle();
-    });
 
     btnUseHere.addEventListener('click', () => {
       requestOneShotGps(true);
